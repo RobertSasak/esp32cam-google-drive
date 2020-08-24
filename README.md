@@ -1,3 +1,6 @@
+![alt text](esp32cam-google-drive.png "ESP32 cam + Google Drive")
+
+
 # esp32cam-google-drive
 
 Upload photos from ESP32 camera to Google Drive folder
