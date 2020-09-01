@@ -124,7 +124,7 @@ void saveCapturedImage()
     Serial.println("Sending image to Google Drive.");
     Serial.println("Size: " + String(fb->len) + "byte");
 
-    client.println("POST " + myScript + " HTTP/1.1");
+    client.println("POST " + url + " HTTP/1.1");
     client.println("Host: " + String(myDomain));
     client.println("Transfer-Encoding: chunked");
     client.println();
