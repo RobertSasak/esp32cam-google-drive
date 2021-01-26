@@ -1,19 +1,28 @@
-#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "Base64.h"
 #include "esp_camera.h"
+// Time
+#include "time.h"
+#include "lwip/err.h"
+#include "lwip/apps/sntp.h"
+// MicroSD
+#include "driver/sdmmc_host.h"
+#include "driver/sdmmc_defs.h"
+#include "sdmmc_cmd.h"
+#include "esp_vfs_fat.h"
+//
+#include <EEPROM.h>
 
-const int sleepTime = 300; // in seconds
+const char *folder = "ESP32";
+const char *scriptID = "here comes very long script ID that you will copy from url of script.google.com";
 const char *ssid = "your wifi network";
 const char *password = "your wifi password";
-const char *folder = "ESP32";
-const char *myDomain = "script.google.com";
-const char *scriptID = "here comes very long script ID that you will copy from url of script.google.com";
+const char *host = "script.google.com";
 const int port = 443;
-
-int waitingTime = 10000; // Wait x seconds for response.
+const int sleepTime = 300;  // in seconds
+const int waitingTime = 10; // Wait x seconds for response.
 
 #define CAMERA_MODEL_AI_THINKER
 
@@ -57,13 +66,50 @@ void setup()
 {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   Serial.begin(115200);
-
-  if (!connectWifi())
+  esp_err_t err = initCamera();
+  if (err != ESP_OK)
   {
-    Serial.println("Cannot connect to Wifi");
+    Serial.printf("Camera init failed with error 0x%x", err);
     deepSleep();
   }
 
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb)
+  {
+    Serial.println("Camera capture failed, check if camera is connected");
+    deepSleep();
+  }
+
+  if (connectWifi())
+  {
+    initTime();
+    sendPhotoDrive(fb);
+  }
+  else
+  {
+    Serial.println("Cannot connect to Wifi");
+  }
+
+  err = initSDCard();
+  if (err == ESP_OK)
+  {
+    Serial.println("SD card mount successfully!");
+    savePhoto(fb);
+  }
+  else
+  {
+    Serial.printf("Failed to mount SD card VFAT filesystem. Error: %s\n", esp_err_to_name(err));
+  }
+  esp_camera_fb_return(fb);
+  deepSleep();
+}
+
+void loop()
+{
+}
+
+esp_err_t initCamera()
+{
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -85,47 +131,38 @@ void setup()
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_UXGA; // UXGA|SXGA|XGA|SVGA|VGA|CIF|QVGA|HQVGA|QQVGA
-  config.jpeg_quality = 3;
-  config.fb_count = 1;
-
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK)
+  if (psramFound())
   {
-    Serial.printf("Camera init failed with error 0x%x", err);
-    deepSleep();
+    Serial.println("PSRAM found");
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = 10;
+    config.fb_count = 2;
   }
+  else
+  {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+  }
+
+  return esp_camera_init(&config);
 }
 
-void loop()
+void sendPhotoDrive(camera_fb_t *fb)
 {
-  saveCapturedImage();
-  deepSleep();
-}
-
-void saveCapturedImage()
-{
-  Serial.println("Connect to " + String(myDomain));
+  Serial.println("Connect to " + String(host));
   WiFiClientSecure client;
-
-  if (client.connect(myDomain, port))
+  client.setInsecure();
+  if (client.connect(host, port))
   {
     Serial.println("Connection successful");
-
-    camera_fb_t *fb = NULL;
-    fb = esp_camera_fb_get();
-    if (!fb)
-    {
-      Serial.println("Camera capture failed");
-      deepSleep();
-    }
-    String url = "/macros/s/" + String(scriptID) + "/exec?folder=" + String(folder);
-
     Serial.println("Sending image to Google Drive.");
     Serial.println("Size: " + String(fb->len) + "byte");
 
+    String url = "/macros/s/" + String(scriptID) + "/exec?folder=" + String(folder);
+
     client.println("POST " + url + " HTTP/1.1");
-    client.println("Host: " + String(myDomain));
+    client.println("Host: " + String(host));
     client.println("Transfer-Encoding: chunked");
     client.println();
 
@@ -144,6 +181,7 @@ void saveCapturedImage()
       client.print("\r\n");
       client.print(output);
       client.print("\r\n");
+      delay(100);
       input += chunkSize;
       Serial.print(".");
       chunk++;
@@ -155,15 +193,13 @@ void saveCapturedImage()
     client.print("0\r\n");
     client.print("\r\n");
 
-    esp_camera_fb_return(fb);
-
     Serial.println("Waiting for response.");
     long int StartTime = millis();
     while (!client.available())
     {
       Serial.print(".");
       delay(100);
-      if ((StartTime + waitingTime) < millis())
+      if ((StartTime + waitingTime * 1000) < millis())
       {
         Serial.println();
         Serial.println("No response.");
@@ -178,9 +214,123 @@ void saveCapturedImage()
   }
   else
   {
-    Serial.println("Connected to " + String(myDomain) + " failed.");
+    Serial.println("Connected to " + String(host) + " failed.");
   }
   client.stop();
+}
+
+void initTime()
+{
+  sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  sntp_setservername(0, "pool.ntp.org");
+  sntp_init();
+  // wait for time to be set
+  time_t now = 0;
+  struct tm timeinfo;
+  timeinfo = {0};
+  int retry = 0;
+  const int retry_count = 10;
+  while (timeinfo.tm_year < (2016 - 1900) && ++retry < retry_count)
+  {
+    Serial.printf("Waiting for system time to be set... (%d/%d)\n", retry, retry_count);
+    delay(2000);
+    time(&now);
+    localtime_r(&now, &timeinfo);
+  }
+  setenv("TZ", "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00", 1);
+  tzset();
+}
+
+static esp_err_t initSDCard()
+{
+  esp_err_t ret = ESP_FAIL;
+  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+  esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+      .format_if_mount_failed = false,
+      .max_files = 1,
+  };
+  sdmmc_card_t *card;
+
+  Serial.println("Mounting SD card...");
+  return esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+}
+
+static esp_err_t savePhotoToSDCard(char *filename, camera_fb_t *fb)
+{
+  Serial.println(filename);
+  char *path = (char *)malloc(150);
+  sprintf(path, "/sdcard/%s", folder);
+  mkdir(path, 0777);
+  free(path);
+  FILE *file = fopen(filename, "w");
+  if (file != NULL)
+  {
+    size_t err = fwrite(fb->buf, 1, fb->len, file);
+    Serial.printf("File saved: %s\n", filename);
+  }
+  else
+  {
+    Serial.println("Could not open file");
+  }
+  fclose(file);
+  esp_camera_fb_return(fb);
+}
+
+void writeIntIntoEEPROM(int address, int number)
+{
+  EEPROM.write(address, number >> 8);
+  EEPROM.write(address + 1, number & 0xFF);
+}
+
+int readIntFromEEPROM(int address)
+{
+  byte byte1 = EEPROM.read(address);
+  byte byte2 = EEPROM.read(address + 1);
+  return (byte1 << 8) + byte2;
+}
+
+void savePhoto(camera_fb_t *fb)
+{
+  char *filename = (char *)malloc(150);
+  struct tm timeinfo;
+  time_t now;
+  time(&now);
+  localtime_r(&now, &timeinfo);
+  if (timeinfo.tm_year < (2016 - 1900))
+  { // if no internet or time not set
+    esp_sleep_wakeup_cause_t wakeup_reason;
+    wakeup_reason = esp_sleep_get_wakeup_cause();
+    int randomNumber;
+    int fileNumber = 1;
+    EEPROM.begin(4);
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER)
+    {
+      randomNumber = readIntFromEEPROM(0);
+      fileNumber = readIntFromEEPROM(2);
+      fileNumber++;
+      writeIntIntoEEPROM(2, fileNumber);
+    }
+    else
+    {
+      randomNumber = random(10000, 99999);
+      writeIntIntoEEPROM(0, randomNumber);
+      writeIntIntoEEPROM(2, fileNumber);
+    }
+    if (!EEPROM.commit())
+    {
+      Serial.println("ERROR! Data commit failed");
+    }
+    sprintf(filename, "/sdcard/%s/%d-%05d.jpg", folder, randomNumber, fileNumber);
+  }
+  else
+  {
+    char strftime_buf[64];
+    strftime(strftime_buf, sizeof(strftime_buf), "%F_%H_%M_%S", &timeinfo);
+    sprintf(filename, "/sdcard/%s/%s.jpg", folder, strftime_buf);
+  }
+  savePhotoToSDCard(filename, fb);
+  free(filename);
 }
 
 void deepSleep()
