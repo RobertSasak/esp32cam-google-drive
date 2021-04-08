@@ -1,3 +1,4 @@
+#include "config.h"
 #include <WiFiClientSecure.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
@@ -14,18 +15,22 @@
 #include "esp_vfs_fat.h"
 //
 #include <EEPROM.h>
+// OTA
+#include <ArduinoOTA.h>
+#include <ESPmDNS.h>
 
-const char *folder = "ESP32";
-const char *scriptID = "here comes very long script ID that you will copy from url of script.google.com";
-const char *ssid = "your wifi network";
-const char *password = "your wifi password";
-const char *host = "script.google.com";
-const int port = 443;
-const int sleepTime = 300;      // in seconds
-const int sleepTimeNight = 600; // in seconds
-const int nightStart = 19;
-const int nightEnd = 6;
-const int waitingTime = 10; // Wait x seconds for response.
+const char *folder = FOLDER;
+const char *scriptID = SCRIPT_ID;
+const char *wifiNetwork = WIFI_NETWORK;
+const char *password = PASSWORD;
+const char *host = HOST;
+const int port = PORT;
+const int sleepTime = SLEEP_TIME;
+const int sleepTimeNight = SLEEP_TIME_NIGHT;
+const int nightStart = NIGHT_START;
+const int nightEnd = NIGHT_END;
+const int waitingTime = WAITING_TIME;
+const int otaWaitingTime = OTA_WAITING_TIME;
 
 #define CAMERA_MODEL_AI_THINKER
 
@@ -55,8 +60,8 @@ bool connectWifi()
 
   Serial.println("");
   Serial.print("Connecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
+  Serial.println(wifiNetwork);
+  WiFi.begin(wifiNetwork, password);
   int retry = 20;
   while (WiFi.status() != WL_CONNECTED && retry > 0)
   {
@@ -71,21 +76,15 @@ void setup()
 {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   Serial.begin(115200);
-  esp_err_t err = initCamera();
-  if (err != ESP_OK)
-  {
-    Serial.printf("Camera init failed with error 0x%x", err);
-    deepSleep();
-  }
-
-  camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb)
-  {
-    Serial.println("Camera capture failed, check if camera is connected");
-    deepSleep();
-  }
 
   if (connectWifi())
+  {
+    ota();
+  }
+
+  camera_fb_t *fb = getPicture();
+
+  if (WiFi.status() == WL_CONNECTED)
   {
     initTime();
     sendPhotoDrive(fb);
@@ -95,7 +94,7 @@ void setup()
     Serial.println("Cannot connect to Wifi");
   }
 
-  err = initSDCard();
+  esp_err_t err = initSDCard();
   if (err == ESP_OK)
   {
     Serial.println("SD card mount successfully!");
@@ -354,4 +353,68 @@ void deepSleep()
   }
   esp_sleep_enable_timer_wakeup(sleep * 1000000);
   esp_deep_sleep_start();
+}
+
+void ota()
+{
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER)
+  {
+    return;
+  }
+  Serial.println("Waiting for update from Arduino editor.");
+  ArduinoOTA.setHostname(folder);
+  ArduinoOTA
+      .onStart([]() {
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH)
+          type = "sketch";
+        else // U_SPIFFS
+          type = "filesystem";
+
+        // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+        Serial.println("Start updating " + type);
+      })
+      .onEnd([]() {
+        Serial.println("\nEnd");
+      })
+      .onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+      })
+      .onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR)
+          Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR)
+          Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR)
+          Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR)
+          Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR)
+          Serial.println("End Failed");
+      });
+
+  ArduinoOTA.begin();
+  unsigned long start = millis();
+  while (millis() - start <= otaWaitingTime * 1000)
+  {
+    ArduinoOTA.handle();
+  }
+}
+
+camera_fb_t *getPicture()
+{
+  esp_err_t err = initCamera();
+  if (err != ESP_OK)
+  {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    deepSleep();
+  }
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb)
+  {
+    Serial.println("Camera capture failed, check if camera is connected");
+    deepSleep();
+  }
+  return fb;
 }
