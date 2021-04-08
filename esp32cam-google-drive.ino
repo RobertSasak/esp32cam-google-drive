@@ -21,7 +21,10 @@ const char *ssid = "your wifi network";
 const char *password = "your wifi password";
 const char *host = "script.google.com";
 const int port = 443;
-const int sleepTime = 300;  // in seconds
+const int sleepTime = 300;      // in seconds
+const int sleepTimeNight = 600; // in seconds
+const int nightStart = 19;
+const int nightEnd = 6;
 const int waitingTime = 10; // Wait x seconds for response.
 
 #define CAMERA_MODEL_AI_THINKER
@@ -43,6 +46,8 @@ const int waitingTime = 10; // Wait x seconds for response.
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
+
+bool isNight = false;
 
 bool connectWifi()
 {
@@ -239,6 +244,11 @@ void initTime()
   }
   setenv("TZ", "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00", 1);
   tzset();
+
+  if (timeinfo.tm_hour >= nightStart || timeinfo.tm_hour < nightEnd)
+  {
+    isNight = true;
+  }
 }
 
 static esp_err_t initSDCard()
@@ -337,6 +347,11 @@ void deepSleep()
 {
   Serial.println("Deep sleep for " + String(sleepTime) + " seconds");
   Serial.flush();
-  esp_sleep_enable_timer_wakeup(sleepTime * 1000000);
+  int sleep = sleepTime;
+  if (isNight)
+  {
+    sleep = sleepTimeNight;
+  }
+  esp_sleep_enable_timer_wakeup(sleep * 1000000);
   esp_deep_sleep_start();
 }
