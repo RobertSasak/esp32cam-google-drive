@@ -56,6 +56,7 @@ bool isNight = false;
 
 bool connectWifi()
 {
+  Serial.println("Sending to " + String(FOLDER));
   WiFi.mode(WIFI_STA);
 
   Serial.println("");
@@ -69,7 +70,12 @@ bool connectWifi()
     delay(500);
     retry--;
   }
-  return WiFi.status() == WL_CONNECTED;
+  if (WiFi.status() == WL_CONNECTED) {
+    IPAddress ip = WiFi.localIP();
+    Serial.println(ip);
+    return true;
+  }
+  return false;
 }
 
 void setup()
@@ -156,7 +162,7 @@ void sendPhotoDrive(camera_fb_t *fb)
 {
   Serial.println("Connect to " + String(host));
   WiFiClientSecure client;
-  client.setInsecure();
+  client.setInsecure(); // Comment out this line on Windows
   if (client.connect(host, port))
   {
     Serial.println("Connection successful");
@@ -344,13 +350,13 @@ void savePhoto(camera_fb_t *fb)
 
 void deepSleep()
 {
-  Serial.println("Deep sleep for " + String(sleepTime) + " seconds");
-  Serial.flush();
-  int sleep = sleepTime;
+  uint64_t sleep = sleepTime;
   if (isNight)
   {
     sleep = sleepTimeNight;
   }
+  Serial.println("Deep sleep for " + String(sleep) + " seconds. Good night.");
+  Serial.flush();
   esp_sleep_enable_timer_wakeup(sleep * 1000000);
   esp_deep_sleep_start();
 }
@@ -410,6 +416,13 @@ camera_fb_t *getPicture()
     Serial.printf("Camera init failed with error 0x%x", err);
     deepSleep();
   }
+  sensor_t * s = esp_camera_sensor_get();
+  if (FLIP)
+  {
+    s->set_hmirror(s, 1);
+    s->set_vflip(s, 1);
+  }
+  delay(4000);
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb)
   {

@@ -10,3 +10,4 @@
 #define NIGHT_END 6          // in hours
 #define WAITING_TIME 10      // Wait x seconds for response.
 #define OTA_WAITING_TIME 30  // in seconds
+#define FLIP false           // Flip capture image
